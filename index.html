@@ -1,0 +1,378 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>TimeShift: Fractured Realms — Prototype</title>
+<style>
+  html,body { height:100%; margin:0; background:#0b0710; color:#fff; font-family:monospace; }
+  canvas { display:block; margin:0 auto; background: linear-gradient(#071026,#000); box-shadow:0 10px 30px rgba(0,0,0,0.6); }
+  #ui { width:800px; margin:12px auto; display:flex; justify-content:space-between; align-items:center; }
+  .meter { width:220px; height:14px; background:#222; border-radius:7px; overflow:hidden; }
+  .meter > i { display:block; height:100%; background:linear-gradient(90deg,#ff6b6b,#ffb86b); width:0%; }
+  .label { font-size:13px; color:#bfc7ff; }
+  button { background:#111827; color:#bfc7ff; border:1px solid #2b2f44; padding:6px 10px; border-radius:6px; cursor:pointer;}
+  button:active{transform:translateY(1px)}
+  #hint {width:800px;margin:4px auto;color:#aab6ff;font-size:13px}
+</style>
+</head>
+<body>
+  <div id="ui">
+    <div class="label">Mode: <strong id="modeLabel">FUTURE (recording)</strong></div>
+    <div class="label">Cycle: <strong id="timerLabel">20.0s</strong></div>
+    <div class="meter" title="Paradox meter"><i id="paradoxFill"></i></div>
+    <div><button id="toggleBtn">Toggle Mode (Space)</button></div>
+  </div>
+  <div id="hint">Controls: ←/→ to move, Z to jump, Space to toggle mode. Goal: get past the locked door using echoes.</div>
+  <canvas id="game" width="800" height="480"></canvas>
+
+<script>
+(() => {
+  const canvas = document.getElementById('game');
+  const ctx = canvas.getContext('2d');
+
+  // Basic world + objects
+  const W = canvas.width, H = canvas.height;
+  const gravity = 0.9;
+  const friction = 0.85;
+  const dt = 1 / 60;
+  const CYCLE_SECONDS = 20;
+  let cycleTimer = CYCLE_SECONDS;
+  let mode = 'FUTURE'; // FUTURE = player recording; PAST = player plays while echoes replay
+  const modeLabel = document.getElementById('modeLabel');
+  const timerLabel = document.getElementById('timerLabel');
+  const paradoxFill = document.getElementById('paradoxFill');
+  const toggleBtn = document.getElementById('toggleBtn');
+
+  // Input
+  const keys = {};
+  document.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; if (e.code==='Space') { e.preventDefault(); toggleMode(); }});
+  document.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+  toggleBtn.addEventListener('click', toggleMode);
+
+  // Simple platform definitions (x,y,w,h)
+  const platforms = [
+    {x:0,y:H-20,w:W,h:20}, // floor
+    {x:40,y:360,w:200,h:16},
+    {x:300,y:300,w:140,h:16},
+    {x:520,y:360,w:220,h:16},
+    // puzzle: lever on small platform, door blocking path
+    {x:220,y:420,w:80,h:10},
+  ];
+
+  // Door object (closed=true)
+  const door = { x:360, y:260, w:40, h:40, closed: true };
+
+  // Lever: when pressed by ANY entity, opens door
+  const lever = { x:250, y:270, w:20, h:20, pressed:false };
+
+  // Player entity
+  function makeActor(x,y,color){
+    return {
+      x: x, y: y, w:20, h:28,
+      vx:0, vy:0,
+      onGround:false,
+      color: color || '#80e7ff',
+      inputs: {}, // for current frame input snapshot
+    };
+  }
+
+  let player = makeActor(60, 320, '#a0ff9b');
+  // We'll allow multiple echoes (one per cycle)
+  let echoes = []; // each echo: {frames: [ {x,y,jump, left,right} ], color}
+
+  // Recording buffer during FUTURE mode
+  let currentRecording = [];
+
+  // Paradox mechanic
+  let paradox = 0;
+  const PARADOX_MAX = 100;
+
+  // Utilities
+  function rectsOverlap(a,b){
+    return !(a.x+a.w < b.x || a.x > b.x+b.w || a.y+a.h < b.y || a.y > b.y+b.h);
+  }
+
+  // Physics step for an actor (applies controls)
+  function stepActor(actor, input){
+    // horizontal
+    const accel = 0.9;
+    if (input.left) actor.vx -= accel;
+    if (input.right) actor.vx += accel;
+    actor.vx *= 0.92;
+    // vertical / jump
+    if (input.jump && actor.onGround){
+      actor.vy = -14;
+      actor.onGround = false;
+    }
+    // gravity
+    actor.vy += gravity;
+    // apply velocities
+    actor.x += actor.vx;
+    actor.y += actor.vy;
+
+    // collisions with platforms (simple AABB)
+    actor.onGround = false;
+    for (const p of platforms){
+      if (rectsOverlap(actor, p)){
+        // collision depth
+        const prevBottom = actor.y - actor.vy + actor.h;
+        // simple resolution: place actor on top if falling
+        if (actor.vy >= 0 && prevBottom <= p.y){
+          actor.y = p.y - actor.h;
+          actor.vy = 0;
+          actor.onGround = true;
+        } else {
+          // horizontal collision — push back
+          if (actor.x < p.x) actor.x = p.x - actor.w - 0.1;
+          else actor.x = p.x + p.w + 0.1;
+          actor.vx = 0;
+        }
+      }
+    }
+    // world bounds
+    if (actor.x < 0) actor.x = 0, actor.vx = 0;
+    if (actor.x + actor.w > W) actor.x = W - actor.w, actor.vx = 0;
+    if (actor.y > H + 200){ // fell off world: reset to start
+      actor.x = 60; actor.y = 320; actor.vx = actor.vy = 0;
+    }
+  }
+
+  // Main loop
+  let last = performance.now();
+  function loop(now){
+    const delta = Math.min(0.05, (now - last) / 1000);
+    last = now;
+
+    // cycle timer
+    cycleTimer -= delta;
+    if (cycleTimer <= 0){
+      fracture(); // automatically fracture when timer runs out
+    }
+
+    // Mode behavior
+    if (mode === 'FUTURE'){
+      // gather input snapshot
+      const input = { left: keys['arrowleft'] || keys['a'], right: keys['arrowright'] || keys['d'], jump: keys['z'] || keys['w'] || keys['arrowup'] || false };
+      player.inputs = input;
+      // step and record
+      stepActor(player, input);
+      // store recording frame
+      currentRecording.push({ x: player.x, y: player.y, vx: player.vx, vy: player.vy, input });
+    } else { // PAST mode
+      // Player is controlled as "past" now; echoes play
+      const input = { left: keys['arrowleft'] || keys['a'], right: keys['arrowright'] || keys['d'], jump: keys['z'] || keys['w'] || keys['arrowup'] || false };
+      player.inputs = input;
+      stepActor(player, input);
+
+      // step all active echoes by advancing their frame index
+      for (const e of echoes){
+        if (!e.playing) continue;
+        e.frameIndex = e.frameIndex || 0;
+        const frame = e.frames[e.frameIndex] || e.frames[e.frames.length - 1];
+        // simple follow by setting position (snap) to recorded positions
+        // to allow interaction with world, we treat echoes as physical actors with pos (no physics)
+        e.actor.x = frame.x;
+        e.actor.y = frame.y;
+        e.actor.w = 20; e.actor.h = 28;
+        e.frameIndex++;
+        if (e.frameIndex >= e.frames.length){
+          e.playing = false; // echo finished
+        }
+      }
+    }
+
+    // Lever detection: any actor standing on lever area (lever top)
+    lever.pressed = false;
+    // check player
+    if (rectsOverlap(player, { x: lever.x, y: lever.y, w: lever.w, h: lever.h })){
+      lever.pressed = true;
+    }
+    // check each echo actor
+    for (const e of echoes){
+      if (rectsOverlap(e.actor, { x: lever.x, y: lever.y, w: lever.w, h: lever.h })){
+        lever.pressed = true;
+      }
+    }
+
+    // Door opens if lever pressed
+    door.closed = !lever.pressed;
+
+    // Paradox: increment when player collides with any echo (except if echo inactive)
+    for (const e of echoes){
+      if (!e.playing) continue;
+      if (rectsOverlap(player, e.actor)){
+        paradox += 40 * delta; // increase faster when colliding
+      }
+    }
+    // slight natural decay
+    paradox = Math.max(0, paradox - 8 * delta);
+    if (paradox >= PARADOX_MAX){
+      resetLevel();
+    }
+
+    // update UI
+    modeLabel.textContent = mode === 'FUTURE' ? 'FUTURE (recording)' : 'PAST (playing)';
+    timerLabel.textContent = `${cycleTimer.toFixed(1)}s`;
+    paradoxFill.style.width = Math.min(100, (paradox / PARADOX_MAX) * 100) + '%';
+
+    render();
+    requestAnimationFrame(loop);
+  }
+
+  function render(){
+    // background (parallax) + glitch when near fracture
+    ctx.clearRect(0,0,W,H);
+    // parallax layers (simple)
+    const phase = (Date.now() % 10000) / 10000;
+    const glitch = Math.max(0, 1 - (cycleTimer / CYCLE_SECONDS)) * 0.0;
+    // back gradient
+    const g = ctx.createLinearGradient(0,0,0,H);
+    g.addColorStop(0, '#0b0820');
+    g.addColorStop(1, '#06040a');
+    ctx.fillStyle = g;
+    ctx.fillRect(0,0,W,H);
+
+    // draw platforms
+    ctx.fillStyle = '#1b2136';
+    for (const p of platforms){
+      roundRect(ctx, p.x, p.y, p.w, p.h, 4, true, false);
+    }
+
+    // draw door
+    ctx.fillStyle = door.closed ? '#d46b6b' : '#6bd46b';
+    roundRect(ctx, door.x, door.y, door.w, door.h, 3, true, false);
+    // draw lever
+    ctx.fillStyle = lever.pressed ? '#ffd86b' : '#bbbbbb';
+    roundRect(ctx, lever.x, lever.y, lever.w, lever.h, 3, true, false);
+
+    // draw echoes (behind player)
+    for (const e of echoes){
+      if (!e.playing) continue;
+      ctx.globalAlpha = 0.65;
+      drawActor(e.actor, e.color);
+      ctx.globalAlpha = 1.0;
+    }
+
+    // draw player
+    drawActor(player, player.color);
+
+    // draw door collision area overlay when closed
+    if (door.closed){
+      ctx.fillStyle = 'rgba(10,10,10,0.6)';
+      ctx.fillRect(door.x, door.y, door.w, door.h);
+      ctx.fillStyle = '#fff';
+      ctx.font = '13px monospace';
+      ctx.fillText('LOCKED', door.x - 2, door.y + door.h/2 + 5);
+    }
+
+    // HUD labels
+    ctx.fillStyle = '#c8d3ff';
+    ctx.font = '12px monospace';
+    ctx.fillText(`Paradox: ${Math.round(paradox)}/${PARADOX_MAX}`, 8, 18);
+  }
+
+  function drawActor(a,color){
+    ctx.fillStyle = color || '#8df';
+    roundRect(ctx, Math.round(a.x), Math.round(a.y), a.w, a.h, 4, true, false);
+    // eyes
+    ctx.fillStyle = '#111';
+    ctx.fillRect(a.x + 5, a.y + 8, 3, 3);
+    ctx.fillRect(a.x + 12, a.y + 8, 3, 3);
+  }
+
+  function roundRect(ctx,x,y,w,h,r,fill,stroke){
+    if (r===undefined) r=6;
+    ctx.beginPath();
+    ctx.moveTo(x+r,y);
+    ctx.arcTo(x+w,y,x+w,y+h,r);
+    ctx.arcTo(x+w,y+h,x,y+h,r);
+    ctx.arcTo(x,y+h,x,y,r);
+    ctx.arcTo(x,y,x+w,y,r);
+    ctx.closePath();
+    if (fill) ctx.fill();
+    if (stroke) ctx.stroke();
+  }
+
+  // Fracture: create an echo from the current recording, switch to PAST mode and start echo playback
+  function fracture(){
+    // finalize recording into an echo
+    if (currentRecording.length > 5){
+      const e = {
+        frames: currentRecording.slice(), // shallow copy
+        color: '#7eaef0',
+        actor: makeActor(currentRecording[0].x, currentRecording[0].y, '#7eaef0'),
+        playing: true,
+        frameIndex: 0
+      };
+      echoes.push(e);
+    }
+    currentRecording = [];
+    // switch to PAST mode
+    mode = 'PAST';
+    cycleTimer = CYCLE_SECONDS;
+    // optionally: limit echoes to last 3 for performance
+    if (echoes.length > 4) echoes.shift();
+  }
+
+  // toggling mode manually
+  function toggleMode(){
+    if (mode === 'FUTURE'){
+      // end recording early, publish echo
+      fracture();
+    } else {
+      // switch to future: allow recording new one (player repositioned to start)
+      mode = 'FUTURE';
+      cycleTimer = CYCLE_SECONDS;
+      player.x = 60; player.y = 320; player.vx=player.vy=0;
+      // clear echoes that have finished playing? keep them
+    }
+  }
+
+  function resetLevel(){
+    // simple reset: clear echoes, reset player, close door, clear paradox
+    echoes = [];
+    currentRecording = [];
+    paradox = 0;
+    door.closed = true;
+    lever.pressed = false;
+    player.x = 60; player.y = 320; player.vx=player.vy=0;
+    mode = 'FUTURE';
+    cycleTimer = CYCLE_SECONDS;
+  }
+
+  // small "goal" interaction: if player reaches right side beyond door when door is open, win (for prototype just reset)
+  function checkWin(){
+    if (!door.closed && player.x > door.x + door.w && player.y + player.h > door.y){
+      // simple "level complete" behavior
+      alert('Level Complete! (proto) — resetting...');
+      resetLevel();
+    }
+  }
+
+  // every frame, check the lever/door and win
+  setInterval(checkWin, 200);
+
+  // Start main loop
+  requestAnimationFrame(loop);
+
+  // Helpful: save/load to localStorage
+  function saveState(){
+    try {
+      localStorage.setItem('ts_state', JSON.stringify({ echoes, player, cycleTimer, mode }));
+    } catch(e){}
+  }
+  function loadState(){
+    try {
+      const s = JSON.parse(localStorage.getItem('ts_state') || 'null');
+      if (s){ echoes = s.echoes || []; player = s.player || player; cycleTimer = s.cycleTimer || cycleTimer; mode = s.mode || mode; }
+    } catch(e){}
+  }
+  window.addEventListener('beforeunload', saveState);
+  loadState();
+
+})();
+</script>
+</body>
+</html>
