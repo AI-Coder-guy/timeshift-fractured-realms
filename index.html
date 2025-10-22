@@ -1,9 +1,9 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8" />
-<meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>TimeShift: Fractured Realms — 10-Level Full Interactive</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>TimeShift: Fractured Realms — 10-Level Full</title>
 <style>
 html,body{margin:0;padding:0;height:100%;background:#0b0710;color:#fff;font-family:monospace;}
 canvas{display:block;margin:0 auto;background:linear-gradient(#071026,#000);}
@@ -27,84 +27,104 @@ button:active{transform:translateY(1px)}
 <canvas id="game" width="800" height="480"></canvas>
 <script>
 (() => {
-const canvas = document.getElementById('game');
-const ctx = canvas.getContext('2d');
-const W = canvas.width, H = canvas.height;
-const gravity = 0.9, dt=1/60, CYCLE_SECONDS=20;
-let cycleTimer = CYCLE_SECONDS, mode='FUTURE';
-const modeLabel = document.getElementById('modeLabel');
-const timerLabel = document.getElementById('timerLabel');
-const paradoxFill = document.getElementById('paradoxFill');
-const toggleBtn = document.getElementById('toggleBtn');
-const keys = {};
+// --- Setup ---
+const canvas=document.getElementById('game'),ctx=canvas.getContext('2d');
+const W=canvas.width,H=canvas.height;
+const gravity=0.9,CYCLE_SECONDS=20;
+let cycleTimer=CYCLE_SECONDS,mode='FUTURE';
+const modeLabel=document.getElementById('modeLabel');
+const timerLabel=document.getElementById('timerLabel');
+const paradoxFill=document.getElementById('paradoxFill');
+const toggleBtn=document.getElementById('toggleBtn');
+const keys={};
 document.addEventListener('keydown',e=>{keys[e.key.toLowerCase()]=true;if(e.code==='Space'){e.preventDefault();toggleMode();}});
 document.addEventListener('keyup',e=>{keys[e.key.toLowerCase()]=false;});
 toggleBtn.addEventListener('click',toggleMode);
 
+// --- Player / Echo ---
 function makeActor(x,y,color){return{x:x,y:y,w:20,h:28,vx:0,vy:0,onGround:false,color:color||'#80e7ff',inputs:{}};}
-let player = makeActor(60,320,'#a0ff9b');
-let echoes=[];
-let currentRecording=[];
-let paradox=0;
-const PARADOX_MAX=100;
+let player=makeActor(60,320,'#a0ff9b');
+let echoes=[],currentRecording=[],paradox=0,PARADOX_MAX=100;
 
+// --- Utilities ---
 function rectsOverlap(a,b){return!(a.x+a.w<b.x||a.x>b.x+b.w||a.y+a.h<b.y||a.y>a.y+b.h);}
-function stepActor(actor,input){
-  const accel=0.9;if(input.left)actor.vx-=accel;if(input.right)actor.vx+=accel;actor.vx*=0.92;
-  if(input.jump&&actor.onGround){actor.vy=-14;actor.onGround=false;}
-  actor.vy+=gravity;actor.x+=actor.vx;actor.y+=actor.vy;
-  actor.onGround=false;
+function stepActor(a,input){
+  const accel=0.9;
+  if(input.left)a.vx-=accel;if(input.right)a.vx+=accel;
+  a.vx*=0.92;
+  if(input.jump&&a.onGround){a.vy=-14;a.onGround=false;}
+  a.vy+=gravity;a.x+=a.vx;a.y+=a.vy;a.onGround=false;
   for(const p of platforms){
-    if(rectsOverlap(actor,p)){
-      const prevBottom=actor.y-actor.vy+actor.h;
-      if(actor.vy>=0&&prevBottom<=p.y){actor.y=p.y-actor.h;actor.vy=0;actor.onGround=true;}
-      else{if(actor.x<p.x)actor.x=p.x-actor.w-0.1;else actor.x=p.x+p.w+0.1;actor.vx=0;}}
+    if(rectsOverlap(a,p)){
+      const prevBottom=a.y-a.vy+a.h;
+      if(a.vy>=0&&prevBottom<=p.y){a.y=p.y-a.h;a.vy=0;a.onGround=true;}
+      else{if(a.x<p.x)a.x=p.x-a.w-0.1;else a.x=p.x+p.w+0.1;a.vx=0;}
+    }
   }
-  if(actor.x<0)actor.x=0,actor.vx=0;if(actor.x+actor.w>W)actor.x=W-actor.w,actor.vx=0;
-  if(actor.y>H+200){actor.x=60;actor.y=320;actor.vx=0;actor.vy=0;}
+  for(const o of dynamicObjects){
+    if(o.type==='moving'||o.type==='lift'||o.type==='bridge'||o.type==='falling'){if(rectsOverlap(a,o)){a.y=o.y-a.h;a.vy=0;a.onGround=true;}}
+  }
+  if(a.x<0)a.x=0,a.vx=0;if(a.x+a.w>W)a.x=W-a.w,a.vx=0;
+  if(a.y>H+200){a.x=60;a.y=320;a.vx=0;a.vy=0;}
 }
 
-// === Level Data (All 10 levels interactive) ===
+// --- Levels ---
 const levels=[
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:300,y:300,w:140,h:16},{x:520,y:360,w:220,h:16},{x:180,y:400,w:80,h:10}],
-    door:{x:360,y:260,w:40,h:40,closed:true},lever:{x:220,y:360,w:20,h:20,pressed:false},dynamicObjects:[] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:200,h:16},{x:520,y:360,w:220,h:16}],
-    door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:260,y:280,w:20,h:20,pressed:false},dynamicObjects:[] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:200,h:16},{x:520,y:360,w:220,h:16}],
-    door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:260,y:280,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'laser',x:400,y:300,w:300,h:5,active:true}] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:140,h:16},{x:520,y:360,w:220,h:16},{x:380,y:330,w:100,h:10}],
-    door:{x:720,y:300,w:40,h:40,closed:true},lever:{x:380,y:300,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'moving',x:380,y:330,w:100,h:10,dir:1,speed:2,startX:380,endX:600}] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:150,h:16},{x:220,y:320,w:100,h:16},{x:360,y:280,w:80,h:16},{x:480,y:340,w:150,h:16}],
-    door:{x:650,y:300,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},lever2:{x:360,y:280,w:20,h:20,pressed:false},
-    dynamicObjects:[] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:200,h:16},{x:520,y:360,w:220,h:16},{x:380,y:280,w:80,h:16}],
-    door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:380,y:280,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'falling',x:380,y:260,w:80,h:10,dy:0,active:false}] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:200,h:16},{x:520,y:360,w:220,h:16},{x:380,y:280,w:80,h:16}],
-    door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:380,y:280,w:20,h:20,pressed:false},dynamicObjects:[] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:150,h:16},{x:220,y:320,w:100,h:16},{x:360,y:280,w:80,h:16},{x:480,y:340,w:150,h:16}],
-    door:{x:650,y:300,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'bridge',x:300,y:320,w:100,h:10,active:false,timer:0}] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:150,h:16},{x:260,y:300,w:100,h:16},{x:360,y:260,w:80,h:16},{x:480,y:220,w:150,h:16}],
-    door:{x:650,y:200,w:40,h:40,closed:true},lever:{x:360,y:260,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'lift',x:360,y:260,w:80,h:16,dy:0,active:false,startY:260,endY:160}] },
-  { platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:150,h:16},{x:220,y:320,w:100,h:16},{x:360,y:280,w:80,h:16},{x:480,y:340,w:150,h:16},{x:600,y:300,w:100,h:16}],
-    door:{x:720,y:280,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},lever2:{x:360,y:280,w:20,h:20,pressed:false},
-    dynamicObjects:[{type:'moving',x:480,y:340,w:150,h:16,dir:1,speed:2,startX:480,endX:600}] }
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16}],door:{x:360,y:260,w:40,h:40,closed:true},lever:{x:220,y:360,w:20,h:20,pressed:false},dynamicObjects:[]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16},{x:260,y:300,w:200,h:16}],door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:260,y:280,w:20,h:20,pressed:false},dynamicObjects:[]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:40,y:360,w:200,h:16}],door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:260,y:280,w:20,h:20,pressed:false},dynamicObjects:[{type:'laser',x:400,y:300,w:300,h:5,active:true}]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:380,y:330,w:100,h:10}],door:{x:720,y:300,w:40,h:40,closed:true},lever:{x:380,y:300,w:20,h:20,pressed:false},dynamicObjects:[{type:'moving',x:380,y:330,w:100,h:10,dir:1,speed:2,startX:380,endX:600}]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:220,y:320,w:100,h:16},{x:360,y:280,w:80,h:16}],door:{x:650,y:300,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},lever2:{x:360,y:280,w:20,h:20,pressed:false},dynamicObjects:[]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:380,y:280,w:80,h:16}],door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:380,y:280,w:20,h:20,pressed:false},dynamicObjects:[{type:'falling',x:380,y:260,w:80,h:10,dy:0,active:false}]},
+{platforms:[{x:0,y:H-20,w:W,h:20}],door:{x:720,y:320,w:40,h:40,closed:true},lever:{x:380,y:280,w:20,h:20,pressed:false},dynamicObjects:[]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:220,y:320,w:100,h:16}],door:{x:650,y:300,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},dynamicObjects:[{type:'bridge',x:300,y:320,w:100,h:10,active:false,timer:0}]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:360,y:260,w:80,h:16}],door:{x:650,y:200,w:40,h:40,closed:true},lever:{x:360,y:260,w:20,h:20,pressed:false},dynamicObjects:[{type:'lift',x:360,y:260,w:80,h:16,dy:0,active:false,startY:260,endY:160}]},
+{platforms:[{x:0,y:H-20,w:W,h:20},{x:220,y:320,w:100,h:16},{x:360,y:280,w:80,h:16},{x:480,y:340,w:150,h:16}],door:{x:720,y:280,w:40,h:40,closed:true},lever:{x:220,y:320,w:20,h:20,pressed:false},lever2:{x:360,y:280,w:20,h:20,pressed:false},dynamicObjects:[{type:'moving',x:480,y:340,w:150,h:16,dir:1,speed:2,startX:480,endX:600}]}
 ];
 
-let currentLevel = 0;
-let platforms=levels[currentLevel].platforms;
-let door=levels[currentLevel].door;
-let lever=levels[currentLevel].lever;
-let lever2=levels[currentLevel].lever2||null;
-let dynamicObjects=levels[currentLevel].dynamicObjects||[];
+let currentLevel=0,platforms=levels[currentLevel].platforms,door=levels[currentLevel].door,lever=levels[currentLevel].lever,lever2=levels[currentLevel].lever2||null,dynamicObjects=levels[currentLevel].dynamicObjects||[];
 
-// Game loop and mechanics (fracture, echoes, paradox, render, update dynamic objects) remain intact.
-// [Code here would continue the full loop, render, fracture, toggleMode, resetLevel, nextLevel, checkWin...]
+// --- Game Functions ---
+function fracture(){if(currentRecording.length>5){const e={frames:currentRecording.slice(),color:'#7eaef0',actor:makeActor(currentRecording[0].x,currentRecording[0].y,'#7eaef0'),playing:true,frameIndex:0};echoes.push(e);}currentRecording=[];mode='PAST';cycleTimer=CYCLE_SECONDS;if(echoes.length>4)echoes.shift();}
+function toggleMode(){if(mode==='FUTURE'){fracture();}else{mode='FUTURE';cycleTimer=CYCLE_SECONDS;player.x=60;player.y=320;player.vx=0;player.vy=0;}}
+function resetLevel(){echoes=[];currentRecording=[];paradox=0;door.closed=true;lever.pressed=false;if(lever2)lever2.pressed=false;player.x=60;player.y=320;player.vx=0;player.vy=0;mode='FUTURE';}
+function nextLevel(){currentLevel++;if(currentLevel>=levels.length){alert('All levels complete! Restarting.');currentLevel=0;}
+platforms=levels[currentLevel].platforms;door=levels[currentLevel].door;lever=levels[currentLevel].lever;lever2=levels[currentLevel].lever2||null;dynamicObjects=levels[currentLevel].dynamicObjects||[];resetLevel();}
+function checkWin(){if(!door.closed&&player.x>door.x+door.w&&player.y+player.h>door.y){alert(`Level ${currentLevel+1} complete!`);nextLevel();}}
 
+// --- Loop ---
+function loop(){
+  const input={left:keys['arrowleft']||keys['a'],right:keys['arrowright']||keys['d'],jump:keys['z']||keys['w']||keys['arrowup']||false};
+  if(mode==='FUTURE'){player.inputs=input;stepActor(player,input);currentRecording.push({x:player.x,y:player.y,vx:player.vx,vy:player.vy,input});}else{
+    player.inputs=input;stepActor(player,input);for(const e of echoes){if(!e.playing)continue;e.frameIndex=e.frameIndex||0;const f=e.frames[e.frameIndex]||e.frames[e.frames.length-1];e.actor.x=f.x;e.actor.y=f.y;e.frameIndex++;if(e.frameIndex>=e.frames.length)e.playing=false;}}
+  lever.pressed=false;if(rectsOverlap(player,lever))lever.pressed=true;if(lever2&&rectsOverlap(player,lever2))lever2.pressed=true;
+  for(const e of echoes){if(rectsOverlap(e.actor,lever))lever.pressed=true;if(lever2&&rectsOverlap(e.actor,lever2))lever2.pressed=true;}
+  for(const o of dynamicObjects){if(o.type==='laser')o.active=!lever.pressed;if(o.type==='moving'){if(lever.pressed)o.x+=o.speed*o.dir;if(o.x<o.startX||o.x>o.endX)o.dir*=-1;}if(o.type==='lift'){if(lever.pressed)o.y-=1;if(o.y<o.endY)o.y=o.endY;}if(o.type==='falling'){if(lever.pressed)o.active=true;if(o.active)o.y+=2;if(o.y>H-20)o.y=H-20;}}
+  door.closed=lever2?!(lever.pressed&&lever2.pressed):!lever.pressed;
+  for(const e of echoes){if(!e.playing)continue;if(rectsOverlap(player,e.actor))paradox+=1;}paradox=Math.max(0,paradox-0.5);if(paradox>=PARADOX_MAX)resetLevel();
+  cycleTimer-=1/60;if(cycleTimer<=0)fracture();
+  modeLabel.textContent=mode==='FUTURE'?'FUTURE (recording)':'PAST (playing)';timerLabel.textContent=`${cycleTimer.toFixed(1)}s`;paradoxFill.style.width=Math.min(100,(paradox/PARADOX_MAX)*100+'%');
+  render();checkWin();requestAnimationFrame(loop);
+}
+
+// --- Render ---
+function render(){
+  ctx.clearRect(0,0,W,H);
+  const g=ctx.createLinearGradient(0,0,W,H);g.addColorStop(0,'#0b0820');g.addColorStop(1,'#06040a');ctx.fillStyle=g;ctx.fillRect(0,0,W,H);
+  ctx.fillStyle='#1b2136';for(const p of platforms)roundRect(ctx,p.x,p.y,p.w,p.h,4,true,false);
+  for(const o of dynamicObjects){if(o.type==='laser'&&o.active){ctx.fillStyle='red';ctx.fillRect(o.x,o.y,o.w,o.h);}else if(o.type==='moving'||o.type==='lift'||o.type==='bridge'||o.type==='falling'){ctx.fillStyle='#ffd86b';roundRect(ctx,o.x,o.y,o.w,o.h,3,true,false);}}
+  ctx.fillStyle=door.closed?'#d46b6b':'#6bd46b';roundRect(ctx,door.x,door.y,door.w,door.h,3,true,false);
+  ctx.fillStyle=lever.pressed?'#ffd86b':'#bbbbbb';roundRect(ctx,lever.x,lever.y,lever.w,lever.h,3,true,false);
+  if(lever2)ctx.fillStyle=lever2.pressed?'#ffd86b':'#bbbbbb',roundRect(ctx,lever2.x,lever2.y,lever2.w,lever2.h,3,true,false);
+  for(const e of echoes){if(!e.playing)continue;ctx.globalAlpha=0.65;drawActor(e.actor,e.color);ctx.globalAlpha=1.0;}
+  drawActor(player,player.color);
+  if(door.closed){ctx.fillStyle='rgba(10,10,10,0.6)';ctx.fillRect(door.x,door.y,door.w,door.h);ctx.fillStyle='#fff';ctx.font='13px monospace';ctx.fillText('LOCKED',door.x-2,door.y+door.h/2+5);}
+  ctx.fillStyle='#c8d3ff';ctx.font='12px monospace';ctx.fillText(`Paradox: ${Math.round(paradox)}/${PARADOX_MAX}`,8,18);
+}
+function drawActor(a,color){ctx.fillStyle=color||'#8df';roundRect(ctx,Math.round(a.x),Math.round(a.y),a.w,a.h,4,true,false);ctx.fillStyle='#111';ctx.fillRect(a.x+5,a.y+8,3,3);ctx.fillRect(a.x+12,a.y+8,3,3);}
+function roundRect(ctx,x,y,w,h,r,fill,stroke){if(r===undefined)r=6;ctx.beginPath();ctx.moveTo(x+r,y);ctx.arcTo(x+w,y,x+w,y+h,r);ctx.arcTo(x+w,y+h,x,y+h,r);ctx.arcTo(x,y+h,x,y,r);ctx.arcTo(x,y,x+w,y,r);ctx.closePath();if(fill)ctx.fill();if(stroke)ctx.stroke();}
+requestAnimationFrame(loop);
+})();
 </script>
 </body>
 </html>
